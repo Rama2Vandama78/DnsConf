@@ -1,0 +1,39 @@
+name: Refresh filtered redirect list
+
+# Каждый день в 04:20 МСК (UTC 01:20) — за 10 минут до синка DnsConf (04:30).
+# Обновляет redirect_filtered.hosts (combined + malw минус chatgpt-кластер).
+# Если GitHub задержит запуск — не страшно: синк возьмёт вчерашний файл,
+# домены-то те же, отставание на один день не критично.
+
+on:
+  schedule:
+    - cron: '20 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate filtered list
+        run: python strip_chatgpt.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add redirect_filtered.hosts
+          if git diff --cached --quiet; then
+            echo "No changes — upstream silent today"
+          else
+            git commit -m "refresh redirect_filtered.hosts [skip ci]"
+            git push
+          fi
