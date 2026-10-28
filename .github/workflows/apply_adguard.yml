@@ -1,0 +1,37 @@
+name: Apply mirror map to AdGuard DNS
+
+# 06:10 МСК (03:10 UTC) — после strip_chatgpt (04:20 МСК) и воркера NextDNS
+# (04:30 МСК) с запасом; задержка GitHub не страшна — донор сам лечит IP,
+# а состав доменов меняется редко. Собирает карту зеркал из
+# redirect_filtered.hosts и пушит её ОДНИМ PUT в personal AdGuard DNS
+# (user rules). NextDNS-пайплайн (воркер + apply_pins) не трогает —
+# он остаётся холодным запасом.
+
+on:
+  schedule:
+    - cron: '10 3 * * *'
+  workflow_dispatch:
+
+# не складывать прогоны: длинный донор-хилинг, новый пуск подождёт
+concurrency:
+  group: adguard-apply
+  cancel-in-progress: false
+
+jobs:
+  adguard:
+    runs-on: ubuntu-latest
+    environment: DNS
+    timeout-minutes: 75
+
+    env:
+      ADGUARD_API_KEY: ${{ secrets.ADGUARD_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build rules and deploy
+        run: python apply_adguard.py
