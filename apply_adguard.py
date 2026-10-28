@@ -74,9 +74,11 @@ API_RETRY_DELAY = 60   # окно rate-limit API AdGuard
 API_RETRIES = 3
 MIN_RESOLVED_FRACTION = 0.5
 
-# --- пины кластера (доказанные Дом.ру T32/T37/T39/T40, как в apply_pins.py) ---
-IP_PRIMARY = "143.20.64.192"    # chatgpt-кластер
-IP_BACKUP = "181.215.40.49"     # запасной chatgpt + основной grok
+# --- пины кластера (T32/T37/T39/T40). grok переехал на чатгпт-кластер ---
+# 2026-10: донор отдаёт grok.com/x.ai с 143.20.64.192; 181.215.40.49
+# мёртв из сети Дом.ру (прогон CI #2: chatgpt жив, grok/4pda нет).
+IP_PRIMARY = "143.20.64.192"    # chatgpt-кластер (+ grok: сюда же смотрит донор)
+IP_BACKUP = "181.215.40.49"     # запасной; единственный vhost 4pda во флоте
 CHATGPT_PIN_ZONES = ["chatgpt.com", "openai.com", "oaistatic.com",
                      "oaiusercontent.com"]
 GROK_PIN_ZONES = ["grok.com", "x.ai"]
@@ -270,12 +272,12 @@ def main():
         print(f"    ВНИМАНИЕ: {IP_PRIMARY} мёртв -> кластер на {IP_BACKUP}")
     else:
         print(f"    {IP_PRIMARY} и {IP_BACKUP} оба мертвы — IP возьмёт донор")
-    if sni_alive("grok.com", IP_BACKUP):
-        grok_ip = IP_BACKUP
-        print(f"    grok-кластер -> {IP_BACKUP} (жив)")
-    elif sni_alive("grok.com", IP_PRIMARY):
+    if sni_alive("grok.com", IP_PRIMARY):
         grok_ip = IP_PRIMARY
-        print(f"    ВНИМАНИЕ: {IP_BACKUP} мёртв -> grok на {IP_PRIMARY}")
+        print(f"    grok-кластер -> {IP_PRIMARY} (жив)")
+    elif sni_alive("grok.com", IP_BACKUP):
+        grok_ip = IP_BACKUP
+        print(f"    ВНИМАНИЕ: {IP_PRIMARY} мёртв -> grok на {IP_BACKUP}")
     else:
         print(f"    оба IP мертвы для grok — IP возьмёт донор")
 
@@ -328,7 +330,7 @@ def main():
         ip = chatgpt_ip or donor_a(z) or IP_PRIMARY
         rules[z] = [f"||{z}^$dnsrewrite=NOERROR;A;{ip}"]
     for z in GROK_PIN_ZONES:
-        ip = grok_ip or donor_a(z) or IP_BACKUP
+        ip = grok_ip or donor_a(z) or IP_PRIMARY
         rules[z] = [f"||{z}^$dnsrewrite=NOERROR;A;{ip}"]
     # 4pda: донор + SNI, запасной — проверенный IP
     p4 = donor_a(P4PDA) or P4PDA_BACKUP
