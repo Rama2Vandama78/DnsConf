@@ -18,12 +18,12 @@ apply_adguard.py — карта зеркал RFL на personal AdGuard DNS од�
                                 => ИНЕРТНЫЙ реврайт, правило НЕ нужно — обычный
                                 резолв AdGuard ответит так же; не совпал =>
                                 новое зеркальное плечо, правило ставим.
-  3. Коллапс: зона целиком во флоте и её апекс зеркалится => ОДНО правило
-     ||зона^$dnsrewrite=NOERROR;A;<IP> (покрывает и все поддомены);
-     зона смешанная => по правилу на зеркальный хост.
+     3. Коллапс: зона целиком во флоте и её апекс зеркалится => ОДНО правило
+        ||зона^$dnsrewrite=NOERROR;A;<IP> (покрывает и все поддомены);
+        зона смешанная => по правилу на зеркальный хост.
   4. Лимиты аккаунта читаются ДО деплоя (GET /account/limits): если правил
-     больше лимита — критичные зоны не трогаем, громоздкий балласт
-     (крупнейшие зоны) отбрасываем и печатаем список.
+     больше лимита — чёрный список зон не трогаем, мусорные громоздкие зоны
+     (крупнейшие, не критичные) отбрасываем и печатаем список.
   5. PUT /dns_servers/{id}/settings c user_rules_settings.rules — правила
      сервера заменяются ЦЕЛИКОМ (ручные правила из дашборда затрёт — не пиши
      их туда, только в этот пайплайн).
@@ -36,12 +36,13 @@ apply_adguard.py — карта зеркал RFL на personal AdGuard DNS од�
 Секрет: ADGUARD_API_KEY (environment DNS). Авторизация: Authorization: ApiKey
 Контракт api.adguard-dns.io/oapi/v1 (спецификация: /swagger/openapi.json):
   GET  /account/limits            -> {user_rules: {limit, used}, ...}
-  GET  /dns_servers               -> {items: [{id, name, default, ...}]}
+  GET  /dns_servers               -> v1: голый массив [{id, name, default}],
+                                     v2: {items: [...]} — принимаем оба формата
   POST /dns_servers               <- {"name": "Main"}   (если сервера нет)
   GET  /dns_servers/{id}/settings -> {..., user_rules_settings: {...}}
   PUT  /dns_servers/{id}/settings <- {"user_rules_settings": {...}}
 Ошибки: 400 + FIELD_REACHED_LIMIT / INSUFFICIENT_LICENSE_TYPE = тариф/лимит;
-429/5xx — временные, ждём 60 с, до 3 попыток.
+429/5xx — временные, ждём 60 с, до 3 попыток (окно как у NextDNS).
 
 Отладка локально: ADGUARD_DRY=1 (без API, только сборка правил),
 ADGUARD_DRY_LIMIT=N (взять первые N доменов), HOSTS_FILE=путь.
@@ -413,17 +414,29 @@ def main():
             print("    ADGUARD_API_KEY не принят. Пересоздай ключ: adguard-dns.io"
                   " -> Dashboard -> email -> User preferences -> API keys.")
         return 1
-    items = (data or {}).get("items") or []
+    # v1 отдаёт голый массив серверов (так и случилось в прогоне CI #1),
+    # v2 — {items: [...]} (пагинация). Принимаем оба формата, чтобы
+    # переезд AdGuard с v1 (удаление в январе 2027) на v2 не ломал скрипт.
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = data.get("items") or []
+    else:
+        items = []
+    items = [s for s in items if isinstance(s, dict)]
     if items:
         srv = next((s for s in items if s.get("default")), items[0])
         print(f"[6] Сервер: «{srv.get('name')}» (id {srv.get('id')})")
     else:
         st, srv = adguard_api("POST", "/dns_servers", {"name": "Main"})
-        if st != 200:
+        if st != 200 or not isinstance(srv, dict):
             print(f"[6] Не удалось создать сервер ({st}): {srv}")
             return 1
         print(f"[6] Создан сервер «Main» (id {srv.get('id')})")
-    sid = srv["id"]
+    sid = srv.get("id")
+    if not sid:
+        print(f"[6] ОШИБКА: в ответе API нет id сервера: {srv}")
+        return 1
 
     # --- [7] деплой --------------------------------------------------------------
     st, cur = adguard_api("GET", f"/dns_servers/{sid}/settings")
