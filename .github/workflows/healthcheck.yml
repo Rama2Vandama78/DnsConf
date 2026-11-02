@@ -1,0 +1,38 @@
+name: AdGuard healthcheck
+
+# Каждые 2 часа (xx:25 UTC): быстрый healthcheck задеплоенных пинов —
+# пара API-запросов + 3 SNI-пробы, деплоя нет (~1 мин). Если пин мёртв,
+# apply_adguard.py сам переходит в полный прогон: флот-скан выберет
+# живое зеркало и задеплоит новую карту (self-heal). Ночной полный
+# ребилд остаётся в apply_adguard.yml (03:10 UTC) — он обновляет «длинный
+# хвост» доменов. Задержка старта GitHub Actions до ~15 мин — норма.
+
+on:
+  schedule:
+    - cron: '25 */2 * * *'
+  workflow_dispatch:
+
+# общий group с apply_adguard: прогоны не складываются в очередь
+concurrency:
+  group: adguard-apply
+  cancel-in-progress: false
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    environment: DNS
+    timeout-minutes: 75
+
+    env:
+      ADGUARD_API_KEY: ${{ secrets.ADGUARD_API_KEY }}
+      ADGUARD_HEALTHCHECK: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Healthcheck (self-heal if broken)
+        run: python apply_adguard.py
