@@ -43,7 +43,7 @@ apply_adguard.py — карта зеркал RFL на personal AdGuard DNS од�
 Защита от пустых деплоев (PUT не выполняется, старые правила живут):
   - донор недоступен в начале / ошибок запросов > 30%;
   - разрешено меньше половины доменов файла;
-  - нет правила хотя бы одной пин-зоны.
+  - после сборки не осталось ни одного правила.
 
 Секрет: ADGUARD_API_KEY (environment DNS). Авторизация: Authorization: ApiKey
 Контракт api.adguard-dns.io/oapi/v1 (спецификация: /swagger/openapi.json):
@@ -84,7 +84,7 @@ HEALTHCHECK = os.environ.get("ADGUARD_HEALTHCHECK", "") == "1"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0"
 ALIVE_CODES = {"200", "301", "302", "307", "308", "400", "403", "404", "421"}
-DNS_PACING = 0.35      # сек между DoH-запросами (воркер DnsConf шёл с 1 с)
+DNS_PACING = 0.35      # сек между DoH-запросами (воркер DnsConf шёл с 1 c)
 RETRY_DELAY = 20       # пауза при 429/5xx DoH
 RETRY_ATTEMPTS = 3
 API_RETRY_DELAY = 60   # окно rate-limit API AdGuard
@@ -92,25 +92,33 @@ API_RETRIES = 3
 MIN_RESOLVED_FRACTION = 0.5
 
 # --- флот-скан (T67): пины выбираются автоматически на каждом прогоне ---
-# Ротация зеркал (смерть .192 в Т66) — не ручная работа: скрипт сканирует
-# кандидатов SNI-пробой и пинит первое живое зеркало для каждой зоны.
-# PROVEN — подтверждённые из сети Дом.ру (всегда первыми; .49 проверен:
-# grok 200 + 4pda 200 у юзера, обслуживает и весь chatgpt-кластер + claude
-# через cf-challenge, который Chrome проходит), далее свежие ответы
-# донора, далее известный флот. Вырезанные IP не рассматриваются.
-PROVEN = ["181.215.40.49"]
-FLEET_FALLBACK = ["5.175.161.40", "45.13.237.213", "37.221.93.141",
-                  "37.221.93.128", "5.175.161.3", "37.221.94.10"]
+# Ротация зеркал (смерть .192 в Т66, вырез .49 в Т69) — не ручная работа:
+# скрипт сканирует кандидатов SNI-пробой и пинит первое живое зеркало
+# для каждой зоны. PROVEN — подтверждённые из сети Дом.ру (всегда
+# первыми; T69: .213 — Claude работает у юзера, .141 — last.fm работает),
+# далее свежие ответы донора, далее известный флот (для 4pda донор упорно
+# отвечает вырезанным .49 — живые vhost'ы 4pda живут на других IP
+# флота, скан их находит). Вырезанные IP не рассматриваются.
+PROVEN = ["45.13.237.213", "37.221.93.141"]
+FLEET_FALLBACK = ["37.221.93.128", "45.13.237.117", "37.221.93.178",
+                  "5.175.161.40", "5.175.161.3", "37.221.94.10"]
 CHATGPT_PIN_ZONES = ["chatgpt.com", "openai.com", "oaistatic.com",
                      "oaiusercontent.com"]
 GROK_PIN_ZONES = ["grok.com", "x.ai"]
 PIN_ZONES = CHATGPT_PIN_ZONES + GROK_PIN_ZONES
 P4PDA = "4pda.to"
-P4PDA_BACKUP = "181.215.40.49"
+# последний известный живой vhost 4pda (T69: всего найдено 34 живых
+# зеркала 4pda; .117 — та же подсеть /24, что и рабочее Claude-зеркало
+# .213; резерв проверяется SNI-пробой перед использованием)
+P4PDA_BACKUP = "45.13.237.117"
 
-# IP, вырезанные Дом.ру (проверено с домашней сети юзера, T37/T66): донор
-# RFL любит выдавать их ПЕРВЫМ ответом (лотерея) — donor_a их пропускает.
-CUT_IPS = {"31.25.239.132"}
+# IP, вырезанные Дом.ру (глобально живы, но из сети юзера недостижимы —
+# подтверждено по симптомам): 31.25.239.132 (T37/T66) и 181.215.40.49
+# (T69: chatgpt+grok+4pda, пиннутые на .49, у юзера не открывались, а
+# claude на .213 и last.fm на .141 работали). Донор RFL любит выдавать
+# вырезанные ПЕРВЫМ ответом (лотерея) — donor_a их пропускает,
+# pick_mirror не пинит.
+CUT_IPS = {"31.25.239.132", "181.215.40.49"}
 
 # Критичные домены вне пин-зон: донорный IP проверяется SNI-пробой; мёртв
 # -> следующий ответ донора; все мертвы -> без правила. claude-кластер
@@ -198,7 +206,7 @@ def http_json(url, headers=None, timeout=15):
 
 def is_private_ip(ip):
     """RFC1918/loopback/link-local/CGNAT — донор иногда отдаёт такие
-    (wiki/jira.last.fm -> 10.22.234.x, T68): это внутренние адреса RFL,
+    (wiki/jira.last.fm -> 10.22.234.x, T68): это внутренние адресы RFL,
     снаружи недостижимы — зеркалом не считаются."""
     o = ip.split(".")
     try:
@@ -458,8 +466,10 @@ def main():
     for z in CHATGPT_PIN_ZONES + GROK_PIN_ZONES:
         zone_pins[z] = pick_mirror(z, donor_a_all(z))
         print(f"    {z} -> {zone_pins[z] or 'живого зеркала нет (реальный DNS)'}")
-    p4 = pick_mirror(P4PDA, donor_a_all(P4PDA)) or P4PDA_BACKUP
-    print(f"    {P4PDA} -> {p4}")
+    p4 = pick_mirror(P4PDA, donor_a_all(P4PDA))
+    if not p4 and P4PDA_BACKUP and sni_alive(P4PDA, P4PDA_BACKUP):
+        p4 = P4PDA_BACKUP    # резерв жив глобально — пинним (T69)
+    print(f"    {P4PDA} -> {p4 or 'живого зеркала нет (реальный DNS)'}")
 
     # --- [2] донор-хилинг общего списка ---------------------------------------
     domains = parse_hosts(HOSTS_FILE)
@@ -526,11 +536,15 @@ def main():
     # У chatgpt/grok/claude блок DNS-only (реальные IP живы) — утечка там
     # безвредна, эти правила им не нужны. Блок type-65/AAAA возвращает
     # браузер к A-реврайту на зеркало (класс svcb-утечки, Т22).
-    rules[P4PDA] = [
-        f"||{P4PDA}^$dnsrewrite=NOERROR;A;{p4}",
-        f"||{P4PDA}^$dnstype=HTTPS",
-        f"||{P4PDA}^$dnstype=AAAA",
-    ]
+    # T69: живого зеркала нет -> правил для 4pda НЕ ставим совсем (без
+    # A-реврайта блокировки type-65 бессмысленны); ночной ребилд и
+    # healthcheck подберут зеркало, когда оно появится во флоте.
+    if p4:
+        rules[P4PDA] = [
+            f"||{P4PDA}^$dnsrewrite=NOERROR;A;{p4}",
+            f"||{P4PDA}^$dnstype=HTTPS",
+            f"||{P4PDA}^$dnstype=AAAA",
+        ]
     # зоны файла: группировка
     by_zone = {}
     for dom, ip in mirrored.items():
@@ -563,6 +577,10 @@ def main():
         for s in dead_dropped[:15]:
             print(f"    {s}")
     print(f"[4] Правил после сборки и верификации: {len(flat)}")
+    if not flat:
+        print("    КРИТИЧНО: правил нет вообще — отмена "
+              "(защита от пустого деплоя).")
+        return 1
 
     if DRY:
         out = os.path.join(os.path.dirname(os.path.abspath(HOSTS_FILE)),
@@ -657,7 +675,7 @@ def main():
                              if ip)
         print(f"[7] ГОТОВО: правил на сервере {new_n} "
               f"(было: {old_n if old_n is not None else '?'}). "
-              f"Пины: {pins_txt or '—'}; 4pda: {p4}")
+              f"Пины: {pins_txt or '—'}; 4pda: {p4 or 'без правила'}")
         return 0
     print(f"[7] ОШИБКА PUT ({st}): {resp}")
     if isinstance(resp, dict):
